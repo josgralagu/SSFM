@@ -53,7 +53,7 @@ def run_pipeline() -> None:
     from config import constants as C
 
     from data.loader import load_raw_m1
-    from data.roll_manager import detect_rolls, save_roll_log
+    from data.roll_manager import detect_rolls, save_roll_log, annotate_rolls
     from preprocessing.resampler import resample_m1_to_m5
     from indicators.ema import compute_ema_pair
     from signals.crossover import generate_crossover_signals
@@ -81,7 +81,9 @@ def run_pipeline() -> None:
         sys.exit(1)
 
     # ------------------------------------------------------------------
-    # Step 2 — Detect and log contract rolls.
+    # Step 2 — Detect and log contract rolls; annotate M1 with is_roll.
+    # annotate_rolls must run BEFORE resampling so that the resampler
+    # can propagate the is_roll flag into the M5 contains_roll column.
     # ------------------------------------------------------------------
     logger.info("=== STEP 2: Detecting contract rolls ===")
     rolls = detect_rolls(df_m1)
@@ -91,8 +93,12 @@ def run_pipeline() -> None:
     else:
         logger.info("No roll events detected (instrument_id column absent or constant).")
 
+    # Annotate M1 with is_roll flag for propagation into M5.
+    df_m1 = annotate_rolls(df_m1)
+
     # ------------------------------------------------------------------
     # Step 3 — Resample M1 → M5.
+    # The resampler propagates is_roll → contains_roll using .any().
     # ------------------------------------------------------------------
     logger.info("=== STEP 3: Resampling M1 → M5 ===")
     df_m5 = resample_m1_to_m5(df_m1)

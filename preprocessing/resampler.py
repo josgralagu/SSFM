@@ -124,7 +124,25 @@ def resample_m1_to_m5(df_m1: pd.DataFrame) -> pd.DataFrame:
         label=S.RESAMPLE_LABEL,
     ).agg(ohlcv_agg)
 
+    # Step 3b — Propagate roll flag if present in M1 data.
+    # A M5 bar is flagged contains_roll=True if ANY of its constituent
+    # M1 bars was a roll bar. This flag is consumed by the backtest engine
+    # to trigger forced close and freeze logic. It does NOT affect OHLCV.
+    if "is_roll" in df_ct.columns:
+        roll_m5 = (
+            df_ct["is_roll"]
+            .astype(int)  # True→1, False→0 so sum() works with resample
+            .resample(S.RESAMPLE_FREQ, closed=S.RESAMPLE_CLOSED, label=S.RESAMPLE_LABEL)
+            .sum()
+            .gt(0)        # True if any M1 bar in the block was a roll
+        )
+        df_m5_ct["contains_roll"] = roll_m5.reindex(df_m5_ct.index, fill_value=False)
+    else:
+        df_m5_ct["contains_roll"] = False
+
     # Step 4 — Drop bars with no trades (open is NaN when no data).
+    # contains_roll is preserved; a roll bar will never have NaN open
+    # because the roll event itself generates trades.
     df_m5_ct = df_m5_ct.dropna(subset=[C.COL_OPEN])
 
     # Step 5 — Convert back to UTC.

@@ -53,10 +53,14 @@ class PendingOrder:
         If set, open a new position in this direction.
     signal_bar : pd.Timestamp
         The bar at which the signal was generated (for audit).
+    exit_reason : str
+        Reason for the close. "signal" for normal crossover exits,
+        "roll" for forced closes triggered by a contract roll event.
     """
     close_direction: Optional[Direction] = None
     open_direction: Optional[Direction] = None
     signal_bar: Optional[pd.Timestamp] = None
+    exit_reason: str = "signal"
 
 
 @dataclass
@@ -73,12 +77,17 @@ class BacktestState:
         Post-slippage entry price of the current open trade.
     entry_bar : pd.Timestamp or None
         Bar at which the current trade was opened.
+    roll_freeze_remaining : int
+        Number of M5 bars remaining in the post-roll freeze window.
+        Zero means no freeze is active. Decremented each bar during freeze.
+        Signal evaluation is skipped while this is > 0.
     """
     position: PositionManager = field(default_factory=PositionManager)
     ledger: Ledger = field(default_factory=Ledger)
     pending: Optional[PendingOrder] = None
     entry_price: Optional[float] = None
     entry_bar: Optional[pd.Timestamp] = None
+    roll_freeze_remaining: int = 0
 
 
 def run_backtest(
@@ -113,17 +122,55 @@ def run_backtest(
         bar = bars.iloc[i]
         bar_ts: pd.Timestamp = bar[C.COL_TS]
         bar_open: float = bar[C.COL_OPEN]
+        is_roll_bar: bool = bool(bar.get("contains_roll", False))
 
         # ---------------------------------------------------------------
         # STEP 1 — EXECUTE pending order from the previous bar's signal.
-        # Uses only bar[i].open; no lookahead into bar[i].close.
+        # Runs unconditionally: even during a freeze or on a roll bar, a
+        # pending close from the prior bar must be filled at this open.
+        # Skipping this step would leave the position in an invalid state.
         # ---------------------------------------------------------------
         if state.pending is not None:
             _execute_pending(state, bar_ts, bar_open)
 
         # ---------------------------------------------------------------
-        # STEP 2 — EVALUATE signal at the CLOSE of bar[i].
-        # Signal is pre-computed; we just read it here.
+        # STEP 2 — ROLL BAR: force-close open position, activate freeze.
+        #
+        # A roll bar is one whose M5 block contains at least one M1 bar
+        # where instrument_id changed. No new positions are opened here.
+        # The close is registered as a PendingOrder so it executes at
+        # bar[i+1].open — identical mechanics to a normal signal close.
+        #
+        # Why not open_direction here: opening on a roll bar means
+        # entering at a price that straddles two contracts. Prohibited.
+        # ---------------------------------------------------------------
+        if is_roll_bar:
+            if not state.position.is_flat():
+                state.pending = PendingOrder(
+                    close_direction=Direction(state.position.current_direction),
+                    open_direction=None,  # never open on a roll bar
+                    signal_bar=bar_ts,
+                    exit_reason="roll",
+                )
+            # Activate freeze regardless of whether a position was open.
+            state.roll_freeze_remaining = S.ROLL_FREEZE_BARS_POST
+            # Do NOT evaluate signals on this bar. Signal evaluation skipped.
+            continue
+
+        # ---------------------------------------------------------------
+        # STEP 3 — FREEZE WINDOW: skip signal evaluation, decrement counter.
+        #
+        # During the freeze, pending orders from STEP 1 still execute
+        # (handled above). Only signal generation is suppressed.
+        # Signals are discarded, not accumulated — no deferred execution.
+        # ---------------------------------------------------------------
+        if state.roll_freeze_remaining > 0:
+            state.roll_freeze_remaining -= 1
+            continue
+
+        # ---------------------------------------------------------------
+        # STEP 4 — NORMAL SIGNAL EVALUATION (unchanged from original).
+        # Reached only when: not a roll bar, not in freeze window.
         # ---------------------------------------------------------------
         signal_value = int(signals.iloc[i])
         action = state.position.evaluate_signal(signal_value, i)
@@ -138,6 +185,7 @@ def run_backtest(
                     action.new_direction if action.open_new else None
                 ),
                 signal_bar=bar_ts,
+                exit_reason="signal",
             )
         else:
             # No signal — clear any stale pending state.
@@ -169,7 +217,11 @@ def _execute_pending(
     if pending.close_direction is not None:
         closing_order_dir = Direction(-pending.close_direction.value)
         exit_price = round_to_tick(
-            compute_fill_price(closing_order_dir, bar_open)
+            compute_fill_price(
+                closing_order_dir,
+                bar_open,
+                is_roll_close=(pending.exit_reason == "roll"),
+            )
         )
 
         assert state.entry_price is not None

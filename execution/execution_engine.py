@@ -7,7 +7,7 @@ in the adverse direction.
 Responsibilities
 ----------------
 - Receive an order (direction, bar open price).
-- Apply 1-tick adverse slippage.
+- Apply adverse slippage (normal or roll-close rate).
 - Return the fill price.
 
 This module does NOT track position state and does NOT compute PnL.
@@ -24,13 +24,17 @@ from execution.position_manager import Direction
 logger = logging.getLogger(__name__)
 
 
-def compute_fill_price(direction: Direction, bar_open: float) -> float:
+def compute_fill_price(
+    direction: Direction,
+    bar_open: float,
+    is_roll_close: bool = False,
+) -> float:
     """
     Compute the fill price for a market order at bar open.
 
     Slippage is applied adversely:
-      - Long  entry  → fill = open + (SLIPPAGE_TICKS × TICK_SIZE)
-      - Short entry  → fill = open - (SLIPPAGE_TICKS × TICK_SIZE)
+      - Long  entry  → fill = open + (slippage_ticks × TICK_SIZE)
+      - Short entry  → fill = open - (slippage_ticks × TICK_SIZE)
 
     For exits (closing an existing position) the direction passed is the
     direction of the CLOSING order (opposite to the position being closed),
@@ -46,6 +50,10 @@ def compute_fill_price(direction: Direction, bar_open: float) -> float:
         Direction of this particular fill (LONG buy or SHORT sell).
     bar_open : float
         Open price of the execution bar.
+    is_roll_close : bool, optional
+        If True, use ROLL_CLOSE_SLIPPAGE_TICKS instead of SLIPPAGE_TICKS.
+        Set to True only for forced position closes triggered by a roll event.
+        Default: False.
 
     Returns
     -------
@@ -60,7 +68,8 @@ def compute_fill_price(direction: Direction, bar_open: float) -> float:
     if direction == Direction.FLAT:
         raise ValueError("Cannot compute fill price for Direction.FLAT.")
 
-    slippage_amount = S.SLIPPAGE_TICKS * C.TICK_SIZE
+    ticks = S.ROLL_CLOSE_SLIPPAGE_TICKS if is_roll_close else S.SLIPPAGE_TICKS
+    slippage_amount = ticks * C.TICK_SIZE
 
     if direction == Direction.LONG:
         fill = bar_open + slippage_amount
@@ -68,9 +77,11 @@ def compute_fill_price(direction: Direction, bar_open: float) -> float:
         fill = bar_open - slippage_amount
 
     logger.debug(
-        "Fill: direction=%s  open=%.5f  slippage=%.5f  fill=%.5f",
-        direction.name, bar_open, slippage_amount, fill,
+        "Fill: direction=%s  open=%.5f  slippage_ticks=%d  fill=%.5f%s",
+        direction.name, bar_open, ticks, fill,
+        "  [ROLL CLOSE]" if is_roll_close else "",
     )
+    return fill
     return fill
 
 

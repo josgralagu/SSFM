@@ -55,6 +55,18 @@ COMMISSION_PER_SIDE: float = 2.50 # USD per contract per side
 CONTRACTS: int = 1                # Fixed position size (single contract)
 
 # ---------------------------------------------------------------------------
+# Roll execution policy (Spec 1.3 — Minimalista)
+# ---------------------------------------------------------------------------
+# Number of M5 bars to freeze signal evaluation AFTER a roll bar.
+# 12 bars = 60 minutes. During this window no new positions are opened.
+# Signals generated during freeze are discarded (not accumulated).
+ROLL_FREEZE_BARS_POST: int = 12
+
+# Slippage ticks applied to forced roll-close fills.
+# Wider than normal (1 tick) to reflect degraded liquidity at roll.
+ROLL_CLOSE_SLIPPAGE_TICKS: int = 2
+
+# ---------------------------------------------------------------------------
 # Bootstrap
 # ---------------------------------------------------------------------------
 BOOTSTRAP_RESAMPLES: int = 1_000
